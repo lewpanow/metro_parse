@@ -1,0 +1,111 @@
+ import requests
+from bs4 import BeautifulSoup
+import openpyxl
+
+def fetch_html(url, headers=None):
+    response = requests.get(url, headers=headers)
+    if response.status_code == 404:
+        return None
+    response.raise_for_status()
+    return response.text
+
+def parse_product_card(card):
+    product_id = card.get('id')
+    link_tag = card.find('a', class_='product-card-photo__link')
+    product_name = link_tag.get('title') if link_tag else None
+    product_url = f"https://online.metro-cc.ru{link_tag['href']}" if link_tag else None
+    
+    regular_price = None
+    promo_price = None
+    
+    price_tags = card.find_all('span', class_='product-price__sum-rubles')
+    if len(price_tags) == 2:  # promo price and regular price available
+        promo_price = price_tags[0].text.strip()
+        regular_price = price_tags[1].text.strip()
+    elif price_tags:  # Only one price available
+        promo_price = price_tags[0].text.strip()
+
+    return {
+        'id': product_id,
+        'name': product_name,
+        'url': product_url,
+        'regular_price': regular_price,
+        'promo_price': promo_price
+    }
+
+def parse_product_page(product_url, headers=None):
+    html = fetch_html(product_url, headers)
+    if not html:
+        return None
+    soup = BeautifulSoup(html, 'html.parser')
+    brand_tag = soup.find('span', class_='product-attributes__list-item-value')
+    brand = brand_tag.text.strip() if brand_tag else None
+    return brand
+
+def scrape_category(category_url, headers=None):
+    products = []
+    page = 1
+
+    while True:
+        print(f"Fetching page {page}...")
+        html = fetch_html(f"{category_url}?page={page}", headers)
+        if not html:
+            print(f"No more pages found at page {page}. Stopping.")
+            break
+
+        soup = BeautifulSoup(html, 'html.parser')
+        product_cards = soup.find_all('div', class_='catalog-2-level-product-card')
+        if not product_cards:
+            break
+
+        for card in product_cards:
+            product_data = parse_product_card(card)
+
+            # Skip products without URLs or IDs
+            if not product_data['url'] or not product_data['id']:
+                continue
+
+            # Fetch additional details from the product page
+            product_data['brand'] = parse_product_page(product_data['url'], headers)
+
+            # Only include products with promo or regular price
+            if product_data['regular_price'] or product_data['promo_price']:
+                products.append(product_data)
+
+        page += 1
+
+    return products
+
+def save_to_xlsx(data, filename):
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    sheet.title = "Products"
+
+    # Write header
+    headers = ['ID', 'Name', 'URL', 'Regular Price', 'Promo Price', 'Brand']
+    sheet.append(headers)
+
+    # Write data
+    for product in data:
+        sheet.append([
+            product['id'],
+            product['name'],
+            product['url'],
+            product['regular_price'],
+            product['promo_price'],
+            product['brand']
+        ])
+
+    workbook.save(filename)
+
+def main():
+    category_url = "https://online.metro-cc.ru/category/sladosti_/shokolad-batonchiki"
+    headers = {
+        'User-Agent': 'Chrome/91.0.4472.124'
+    }
+
+    products = scrape_category(category_url, headers)
+    save_to_xlsx(products, 'metro_products.xlsx')
+
+if __name__ == '__main__':
+    main()
